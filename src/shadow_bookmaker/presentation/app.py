@@ -6,72 +6,84 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from src.shadow_bookmaker.application.orchestrator import BrokerOrchestrator
 from src.shadow_bookmaker.domain.models import CustomerTicket, TicketLeg
 
-st.set_page_config(page_title="Shadow Broker | 信用网风控台", layout="wide")
+st.set_page_config(page_title="Shadow Broker | A/B仓路由总台", layout="wide")
 
 @st.cache_resource
 def get_orchestrator(): return BrokerOrchestrator()
 
-def main():
-    st.title("🛡️ Shadow Broker | A/B仓风控路由中控台")
-    st.markdown("系统核心规则：**自动剥离大盘抽水 -> 计算真实数学期望 -> 动态路由 (吃单入库 / 抛盘对冲 / 直接拒单)**")
+def render_decision(decision, ticket):
+    if decision.action == "REJECT":
+        st.error("### 🔴 毒药单警告：全额拒单 (REJECT)")
+        st.write(f"**拦截原因:** {decision.reason}")
+    elif decision.action == "ACCEPT_A_BOOK_HEDGE":
+        st.success("### 🟢 无风险套利：接单并抛盘 (A-Book)")
+        st.info(f"👉 **动作:** 拿着客户的钱，去外围下注 **¥{decision.hedge_stake:.0f}**")
+    elif decision.action == "ACCEPT_B_BOOK":
+        st.info("### 🔵 优质韭菜单：全额吃飞入底仓 (B-Book)")
+        st.write(f"**决策:** {decision.reason}")
+        st.info(f"👉 **指令:** 本金 **¥{decision.b_book_stake:.0f}** 闭着眼睛全吃。")
+    elif decision.action == "ACCEPT_PARTIAL_HEDGE":
+        st.warning("### 🟡 敞口超限：降维对冲 (Partial Hedge)")
+        st.write(f"**决策:** {decision.reason}")
+        st.info(f"👉 **核指令:** 截留底仓，并立刻去大盘重注单场 **¥{decision.hedge_stake:.0f}** (赔率要求 > {decision.hedge_odds:.2f}) 强行断腿。")
+
     st.markdown("---")
-    
-    col1, col2 = st.columns([1, 1.5])
-    
-    with col1:
-        st.subheader("📥 录入客户工单")
-        with st.form("ticket_form"):
-            stake = st.number_input("下注金额 (¥)", min_value=1000, max_value=50000, value=8000, step=1000)
-            
-            st.markdown("##### 比赛场次设置")
-            match_id_1 = st.text_input("赛事指纹", "Manchester United vs Tottenham Hotspur", disabled=True)
-            selection_1 = st.selectbox("下注选项", ["home", "away", "draw"])
-            customer_odds_1 = st.number_input("客户要求赔率", min_value=1.01, max_value=10.0, value=1.85, step=0.05)
-            
-            submit = st.form_submit_button("🚀 提交智能引擎裁决", use_container_width=True)
+    cols = st.columns(4)
+    cols[0].metric("客户总赔率", f"{ticket.total_odds:.2f}")
+    cols[1].metric("大盘真实胜率", f"{decision.true_probability*100:.2f}%")
+    cols[2].metric("庄家期望(EV)", f"{decision.house_ev*100:.2f}%")
+    cols[3].metric("万一爆冷净亏", f"¥ {ticket.liability:.0f}")
 
-    with col2:
-        st.subheader("📊 风控雷达判决令")
-        if submit:
-            ticket = CustomerTicket(
-                ticket_id=f"TCK-{str(uuid.uuid4())[:6].upper()}", ticket_type="single", stake=stake,
-                legs=[TicketLeg(match_id=match_id_1, selection=selection_1, customer_odds=customer_odds_1)]
-            )
-            
-            orchestrator = get_orchestrator()
-            with st.spinner("请求 Pinnacle 标杆大盘，执行极其复杂的 De-vigging (去水) 计算..."):
+def main():
+    st.title("🛡️ Shadow Broker | 风控核心中控台")
+    st.markdown("机制：**De-vig 去水 -> EV 计算 -> 智能路由 (吃飞入库 / 断腿对冲 / 拒单)**")
+    
+    tab1, tab2 = st.tabs(["🎯 单关票 (Single)", "🔗 二串一票 (Parlay)"])
+    orchestrator = get_orchestrator()
+
+    with tab1:
+        c1, c2 = st.columns([1, 1.5])
+        with c1:
+            st.subheader("📥 录入单关")
+            with st.form("single_form"):
+                stake = st.number_input("下注金额 (¥)", 1000, 50000, 15000, 1000)
+                match_id = st.text_input("赛事指纹", "Manchester United vs Tottenham Hotspur", disabled=True)
+                sel = st.selectbox("选项", ["home", "away", "draw"])
+                odds = st.number_input("客户赔率", 1.01, 10.0, 2.00, 0.05)
+                submit_s = st.form_submit_button("🚀 裁决单场")
+        with c2:
+            st.subheader("📊 裁决雷达")
+            if submit_s:
+                ticket = CustomerTicket(ticket_id=f"SGL-{uuid.uuid4().hex[:6].upper()}", ticket_type="single", stake=stake, legs=[TicketLeg(match_id=match_id, selection=sel, customer_odds=odds)])
                 try: loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                decisions = loop.run_until_complete(orchestrator.evaluate_incoming_tickets([ticket]))
-            
-            decision = decisions[0]
-            
-            # UI 渲染
-            if decision.action == "REJECT":
-                st.error("### 🔴 毒药单警告：全额拒单 (REJECT)")
-                st.write(f"**拦截原因:** {decision.reason}")
-            elif decision.action == "ACCEPT_A_BOOK_HEDGE":
-                 st.success("### 🟢 无风险套利：接单并抛盘 (A-Book)")
-                 st.write(f"**决策理由:** {decision.reason}")
-                 st.info(f"👉 **系统动作:** 拿着客户的钱，去外围下注 **¥{decision.hedge_stake:.0f}** (目标最低赔率必须 > {decision.hedge_odds:.2f})")
-            elif decision.action == "ACCEPT_B_BOOK":
-                 st.info("### 🔵 优质韭菜单：全额吃飞入底仓 (B-Book)")
-                 st.write(f"**决策理由:** {decision.reason}")
-                 st.info(f"👉 **系统动作:** 自己硬吃这笔金额 **¥{decision.b_book_stake:.0f}**，长期赢取大数概率差额。")
-            elif decision.action == "ACCEPT_PARTIAL_HEDGE":
-                 st.warning("### 🟡 敞口超限：部分对冲降维 (Partial Hedge)")
-                 st.write(f"**决策理由:** {decision.reason}")
-                 st.info(f"👉 **系统动作:** 截留自己吃下 **¥{decision.b_book_stake:.0f}**，剩余溢出风险拿去大盘打水 **¥{decision.hedge_stake:.0f}**。")
+                except RuntimeError: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+                render_decision(loop.run_until_complete(orchestrator.evaluate_incoming_tickets([ticket]))[0], ticket)
 
-            st.markdown("---")
-            st.markdown("#### 核心算力透视")
-            metrics_cols = st.columns(4)
-            metrics_cols[0].metric("客户综合赔率", f"{ticket.total_odds:.2f}")
-            metrics_cols[1].metric("大盘去水真实胜率", f"{decision.true_probability*100:.1f}%")
-            metrics_cols[2].metric("庄家期望优势(EV)", f"{decision.house_ev*100:.2f}%")
-            metrics_cols[3].metric("万一爆冷的净亏损", f"¥ {ticket.liability:.0f}")
+    with tab2:
+        c1, c2 = st.columns([1, 1.5])
+        with c1:
+            st.subheader("📥 录入二串一 (高利润区)")
+            with st.form("parlay_form"):
+                p_stake = st.number_input("下注金额 (¥)", 1000, 50000, 10000, 1000)
+                st.markdown("**第一腿 (Leg 1)**")
+                l1_m = st.text_input("赛事 1", "Manchester United vs Tottenham Hotspur", disabled=True)
+                l1_s = st.selectbox("选项 1", ["home", "away", "draw"], key="s1")
+                l1_o = st.number_input("赔率 1", 1.01, 10.0, 2.05, 0.05, key="o1")
+                st.markdown("**第二腿 (Leg 2)**")
+                l2_m = st.text_input("赛事 2", "Real Madrid vs Barcelona", disabled=True)
+                l2_s = st.selectbox("选项 2", ["home", "away", "draw"], index=0, key="s2")
+                l2_o = st.number_input("赔率 2", 1.01, 10.0, 1.80, 0.05, key="o2")
+                submit_p = st.form_submit_button("🚀 核动力断腿裁决")
+        with c2:
+            st.subheader("📊 降维抛盘运算")
+            if submit_p:
+                ticket = CustomerTicket(ticket_id=f"PLY-{uuid.uuid4().hex[:6].upper()}", ticket_type="parlay_2", stake=p_stake, legs=[
+                        TicketLeg(match_id=l1_m, selection=l1_s, customer_odds=l1_o),
+                        TicketLeg(match_id=l2_m, selection=l2_s, customer_odds=l2_o)
+                    ])
+                try: loop = asyncio.get_running_loop()
+                except RuntimeError: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+                render_decision(loop.run_until_complete(orchestrator.evaluate_incoming_tickets([ticket]))[0], ticket)
 
 if __name__ == "__main__":
     main()
