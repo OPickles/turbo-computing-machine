@@ -18,7 +18,7 @@ class TicketLeg(BaseModel):
 class CustomerTicket(BaseModel):
     ticket_id: str
     ticket_type: Literal["single", "parlay_2"]
-    stake: float = Field(..., ge=1000, le=50000) # 兼容你的 5k~1w 业务
+    stake: float = Field(..., ge=1000, le=50000)
     legs: List[TicketLeg]
     
     @property
@@ -28,13 +28,7 @@ class CustomerTicket(BaseModel):
         return res
         
     @property
-    def potential_payout(self) -> float:
-        return self.stake * self.total_odds
-        
-    @property
-    def liability(self) -> float:
-        """如果客户中奖，庄家净亏损多少"""
-        return self.potential_payout - self.stake
+    def liability(self) -> float: return (self.stake * self.total_odds) - self.stake
 
 class RiskDecision(BaseModel):
     ticket_id: str
@@ -45,3 +39,9 @@ class RiskDecision(BaseModel):
     hedge_stake: float = 0.0
     hedge_odds: float = 0.0
     b_book_stake: float = 0.0
+    
+    # 🌟 账本持久化溯源字段
+    retained_stake: float = 0.0
+    retained_liability: float = 0.0
+    danger_match_id: str = ""
+    danger_selection: str = ""
