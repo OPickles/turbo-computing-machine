@@ -1,36 +1,23 @@
-import asyncio
-from typing import List
-from collections import defaultdict
+from typing import List, Dict
+from src.shadow_bookmaker.domain.risk_engine import RiskEngine
+from src.shadow_bookmaker.domain.models import CustomerTicket, RiskDecision, OddsDTO
 from src.shadow_bookmaker.application.team_mapper import TeamMapper
-from src.shadow_bookmaker.domain.calculator import ArbitrageCalculator
-from src.shadow_bookmaker.domain.models import ArbitrageOpportunity
-from src.shadow_bookmaker.infrastructure.bookmakers.mock_bookies import PinnacleMock, ScraperMock
+from src.shadow_bookmaker.infrastructure.bookmakers.mock_bookies import PinnacleMock
 
-class ArbitrageOrchestrator:
+class BrokerOrchestrator:
     def __init__(self):
         self.mapper = TeamMapper()
-        self.calculator = ArbitrageCalculator()
-        # 依赖注入：这里你随时可以增加/替换为真实的 API 和爬虫
-        self.bookmakers = [PinnacleMock(self.mapper), ScraperMock(self.mapper)]
-
-    async def run_scan(self) -> List[ArbitrageOpportunity]:
-        # 1. 【高并发】无视阻塞，同时向所有盘口开火抓取
-        tasks = [bookie.fetch_odds() for bookie in self.bookmakers]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        self.risk_engine = RiskEngine(max_liability_per_ticket=20000.0) # 设最高风控线两万
+        self.pinnacle = PinnacleMock(self.mapper) # 必须有一个标杆大庄作为概率锚点
         
-        # 2. 【数据对齐】按洗干净的比赛实体放进同一个桶里
-        match_pool = defaultdict(list)
-        for res in results:
-            if isinstance(res, Exception): continue
-            for odds in res:
-                teams = sorted([odds.home_team, odds.away_team])
-                odds.match_id = f"{teams[0]} vs {teams[1]}"
-                match_pool[odds.match_id].append(odds)
-
-        # 3. 【数学结算】找套利
-        opportunities = []
-        for match_id, odds_list in match_pool.items():
-            opp = self.calculator.calculate_2way(odds_list)
-            if opp: opportunities.append(opp)
-                    
-        return sorted(opportunities, key=lambda x: x.profit_margin, reverse=True)
+    async def evaluate_incoming_tickets(self, tickets: List[CustomerTicket]) -> List[RiskDecision]:
+        odds_list = await self.pinnacle.fetch_odds()
+        market_data: Dict[str, OddsDTO] = {}
+        for odds in odds_list: market_data[odds.match_id] = odds
+            
+        decisions = []
+        for ticket in tickets:
+            decision = self.risk_engine.evaluate(ticket, market_data)
+            decisions.append(decision)
+            
+        return decisions
