@@ -1,7 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    PINNACLE_API_KEY: str = "your_dev_key"
+    ODDS_API_KEY: str = ""  # 🌟 真实外盘的上帝之钥
     REQUEST_TIMEOUT: int = 15
     TEAM_MAPPING_PATH: str = "data/team_mapping.json"
     
